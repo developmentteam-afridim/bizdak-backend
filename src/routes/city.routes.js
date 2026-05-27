@@ -1,0 +1,47 @@
+const router = require('express').Router();
+const { body, param } = require('express-validator');
+const { validate } = require('../middleware/validate.middleware');
+const { authenticate } = require('../middleware/auth.middleware');
+const ctrl = require('../controllers/city.controller');
+
+// Public
+router.get('/', ctrl.list);
+router.get('/:slug', [param('slug').isSlug().withMessage('Invalid city slug format.'), validate], ctrl.get);
+router.get('/:slug/pack', [param('slug').isSlug().withMessage('Invalid city slug format.'), validate], ctrl.getCityPack);
+
+// Admin
+router.post(
+  '/',
+  authenticate,
+  [
+    body('name').notEmpty(),
+    body('slug').notEmpty().isSlug(),
+    body('country').notEmpty(),
+    body('lat').isFloat({ min: -90, max: 90 }),
+    body('lng').isFloat({ min: -180, max: 180 }),
+    validate,
+  ],
+  ctrl.create
+);
+
+router.put(
+  '/:id',
+  authenticate,
+  [
+    param('id').isUUID(),
+    body('name').optional().notEmpty(),
+    // slug is intentionally excluded — changing slug breaks FCM topic subscriptions
+    body('country').optional().notEmpty(),
+    body('lat').optional().isFloat({ min: -90, max: 90 }),
+    body('lng').optional().isFloat({ min: -180, max: 180 }),
+    validate,
+  ],
+  ctrl.update
+);
+
+// Count stores/deals in a city without deleting — used by admin delete confirmation dialog
+router.get('/:id/count', authenticate, [param('id').isUUID(), validate], ctrl.countCityData);
+
+router.delete('/:id', authenticate, [param('id').isUUID(), validate], ctrl.remove);
+
+module.exports = router;
