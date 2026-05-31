@@ -5,7 +5,6 @@ const { authenticate } = require('../middleware/auth.middleware');
 const rateLimit = require('express-rate-limit');
 const ctrl = require('../controllers/store.controller');
 const { getNewDeals } = require('../controllers/newdeals.controller');
-
 // Stricter limiter for the new-deals endpoint.
 // Each device checks at most once per geofence entry (every ~15 min due to cache).
 // 60 requests per 15 min per IP allows for dense areas without abuse.
@@ -18,15 +17,12 @@ const newDealsLimiter = rateLimit({
   // Skip if IP is not available (e.g. behind a proxy without trust proxy set)
   skip: (req) => !req.ip,
 });
-
 // Public
 router.get('/', [query('cityId').optional().isUUID(), query('cursor').optional().isUUID(), validate], ctrl.list);
 router.get('/:id', [param('id').isUUID(), validate], ctrl.get);
 router.post('/:id/view', [param('id').isUUID(), validate], ctrl.recordView);
-
 // Returns the city a store belongs to — used by mobile auto-switch
 router.get('/:id/city', [param('id').isUUID(), validate], ctrl.getCity);
-
 // Mobile — battery-efficient new deals check (no auth, no user ID)
 router.get(
   '/:id/deals/new',
@@ -38,7 +34,6 @@ router.get(
   ],
   getNewDeals
 );
-
 // Admin
 router.post(
   '/',
@@ -49,11 +44,13 @@ router.post(
     body('lat').isFloat({ min: -90, max: 90 }),
     body('lng').isFloat({ min: -180, max: 180 }),
     body('cityId').isUUID(),
+    // website: optional. Empty/null is allowed (treated as "no website"); a
+    // non-empty value must be a valid http(s) URL. The previous chain used a
+    // custom validator that only PASSED for empty values, so any real URL was
+    // rejected with "Invalid value" — that bug is removed here.
     body('website')
       .optional({ nullable: true })
-      .custom((v) => !v || v === '')  // allow empty string — treated as null in controller
-      .bail()
-      .if((v) => v && v !== '')
+      .if((value) => value !== null && value !== undefined && value !== '')
       .isURL({ require_protocol: true, require_tld: true, protocols: ['http', 'https'] })
       .withMessage('website must be a valid URL starting with http:// or https://'),
     body('phone').optional({ nullable: true }).isString().isLength({ max: 30 }),
@@ -61,7 +58,6 @@ router.post(
   ],
   ctrl.create
 );
-
 router.put(
   '/:id',
   authenticate,
@@ -71,11 +67,11 @@ router.put(
     body('address').optional().notEmpty(),
     body('lat').optional().isFloat({ min: -90, max: 90 }),
     body('lng').optional().isFloat({ min: -180, max: 180 }),
+    // website: optional. Empty/null is allowed; a non-empty value must be a
+    // valid http(s) URL. See note on the POST route above.
     body('website')
       .optional({ nullable: true })
-      .custom((v) => !v || v === '')
-      .bail()
-      .if((v) => v && v !== '')
+      .if((value) => value !== null && value !== undefined && value !== '')
       .isURL({ require_protocol: true, require_tld: true, protocols: ['http', 'https'] })
       .withMessage('website must be a valid URL starting with http:// or https://'),
     body('phone').optional({ nullable: true }).isString().isLength({ max: 30 }),
@@ -83,12 +79,10 @@ router.put(
   ],
   ctrl.update
 );
-
 router.delete(
   '/:id',
   authenticate,
   [param('id').isUUID(), validate],
   ctrl.remove
 );
-
 module.exports = router;
