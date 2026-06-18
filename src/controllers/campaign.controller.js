@@ -1,14 +1,11 @@
 const prisma = require('../utils/prisma');
 const { buildTopic, sendToTopic } = require('../utils/firebase');
-
 async function list(req, res, next) {
   try {
     const where = {};
     if (req.query.cityId) where.cityId = req.query.cityId;
-
-    const limit  = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const limit  = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const cursor = req.query.cursor;
-
     const campaigns = await prisma.campaign.findMany({
       where,
       include: {
@@ -21,15 +18,12 @@ async function list(req, res, next) {
       take:   limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     });
-
     const hasNextPage = campaigns.length > limit;
     const items       = hasNextPage ? campaigns.slice(0, limit) : campaigns;
     const nextCursor  = hasNextPage ? items[items.length - 1].id : null;
-
     res.json({ items: items.map(formatCampaign), nextCursor, hasNextPage });
   } catch (err) { next(err); }
 }
-
 async function get(req, res, next) {
   try {
     const campaign = await prisma.campaign.findUniqueOrThrow({
@@ -44,7 +38,6 @@ async function get(req, res, next) {
     res.json(formatCampaign(campaign));
   } catch (err) { next(err); }
 }
-
 /**
  * Create a campaign.
  *
@@ -60,7 +53,6 @@ async function get(req, res, next) {
 async function create(req, res, next) {
   try {
     const { dealIds = [], ...rawBody } = req.body;
-
     // Whitelist allowed campaign fields — prevent mass assignment
     const data = {};
     const allowedFields = ['title', 'body', 'type', 'cityId', 'storeId', 'tagSlug', 'imageUrl'];
@@ -69,7 +61,6 @@ async function create(req, res, next) {
     if (rawBody.type === 'CROSS_CITY' && rawBody.targetCityId) {
       data.targetCityId = rawBody.targetCityId;
     }
-
     // Normalize empty strings to null — the admin form sends '' for unselected
     // optional fields (storeId, tagSlug, imageUrl). An empty string is NOT a
     // valid UUID and will cause a Prisma FK violation crash. Convert to null
@@ -77,24 +68,20 @@ async function create(req, res, next) {
     if (data.storeId   === '') data.storeId   = null;
     if (data.tagSlug   === '') data.tagSlug   = null;
     if (data.imageUrl  === '') data.imageUrl  = null;
-
     // Validate dealIds are valid UUIDs to prevent injection
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const invalidIds = dealIds.filter((id) => typeof id !== 'string' || !uuidRegex.test(id));
     if (invalidIds.length) {
       return res.status(422).json({ error: 'dealIds must be valid UUIDs.' });
     }
-
     // Validate CROSS_CITY requires targetCityId
     if (data.type === 'CROSS_CITY' && !data.targetCityId) {
       return res.status(422).json({ error: 'CROSS_CITY campaigns require a targetCityId (audience city).' });
     }
-
     // Resolve the AUDIENCE city slug for FCM topic
     // For CROSS_CITY: audience = targetCity. For all others: audience = store's city.
     const audienceCityId = data.type === 'CROSS_CITY' ? data.targetCityId : data.cityId;
     const audienceCity = await prisma.city.findUniqueOrThrow({ where: { id: audienceCityId } });
-
     // Validate storeId and tagSlug in parallel — both are independent of each other
     const [storeCheck, tagCheck] = await Promise.all([
       data.storeId
@@ -104,19 +91,16 @@ async function create(req, res, next) {
         ? prisma.tag.findUnique({ where: { slug: data.tagSlug }, select: { id: true } })
         : Promise.resolve(true), // no tagSlug needed — skip check
     ]);
-
     if (data.storeId && !storeCheck) {
       return res.status(422).json({ error: 'Store does not belong to the specified city.' });
     }
     if (data.type === 'INTEREST_BASED' && data.tagSlug && !tagCheck) {
       return res.status(422).json({ error: `Tag slug '${data.tagSlug}' not found. Check your tags.` });
     }
-
     const fcmTopic = buildTopic(
       audienceCity.slug,
       data.type === 'INTEREST_BASED' ? data.tagSlug : null
     );
-
     // Verify all linked deals belong to the campaign city
     if (dealIds.length > 0) {
       const validDeals = await prisma.deal.findMany({
@@ -127,7 +111,6 @@ async function create(req, res, next) {
         return res.status(422).json({ error: 'One or more deals do not belong to the campaign city.' });
       }
     }
-
     const campaign = await prisma.campaign.create({
       data: {
         ...data,
@@ -143,11 +126,9 @@ async function create(req, res, next) {
         deals:      { include: { deal: { select: { id: true, title: true } } } },
       },
     });
-
     res.status(201).json(formatCampaign(campaign));
   } catch (err) { next(err); }
 }
-
 /**
  * Send a campaign to its FCM topic.
  * Topic was set at creation time — always the AUDIENCE city topic.
@@ -162,11 +143,9 @@ async function send(req, res, next) {
         deals:      { include: { deal: { select: { id: true, title: true } } } },
       },
     });
-
     if (campaign.sentAt) {
       return res.status(409).json({ error: 'Campaign already sent.', sentAt: campaign.sentAt });
     }
-
     // Atomic lock using a unique sentLock field approach:
     // Use updateMany with sentAt: null condition — if count=0, another request already sent it
     const sentAt = new Date();
@@ -178,7 +157,6 @@ async function send(req, res, next) {
       const already = await prisma.campaign.findUnique({ where: { id: req.params.id } });
       return res.status(409).json({ error: 'Campaign already sent.', sentAt: already?.sentAt });
     }
-
     const data = {
       campaignId:     campaign.id,
       campaignTitle:  campaign.title, // read by mobile resolveNotificationNav for campaign banner
@@ -188,7 +166,6 @@ async function send(req, res, next) {
     };
     if (campaign.storeId)      data.storeId = campaign.storeId;
     if (campaign.deals.length) data.dealIds = campaign.deals.map((cd) => cd.deal.id).join(',');
-
     try {
       await sendToTopic(campaign.fcmTopic, {
         title:    campaign.title,
@@ -204,27 +181,22 @@ async function send(req, res, next) {
       }).catch(() => {}); // best-effort rollback
       throw fcmErr; // propagate to error handler
     }
-
     res.json({
       message: `Campaign sent to topic "${campaign.fcmTopic}".`,
       sentAt,  // already captured before the atomic lock — no extra DB query needed
     });
   } catch (err) { next(err); }
 }
-
 async function remove(req, res, next) {
   try {
-    const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: req.params.id } });
-    if (campaign.sentAt) {
-      return res.status(409).json({ error: 'Cannot delete a campaign that has already been sent.' });
-    }
+    // Ensure the campaign exists (throws 404 via error handler if not)
+    await prisma.campaign.findUniqueOrThrow({ where: { id: req.params.id } });
+    // Sent campaigns CAN be deleted — removes the campaign and its analytics record.
     await prisma.campaign.delete({ where: { id: req.params.id } });
     res.status(204).end();
   } catch (err) { next(err); }
 }
-
 function formatCampaign(campaign) {
   return { ...campaign, deals: campaign.deals?.map((cd) => cd.deal) ?? [] };
 }
-
 module.exports = { list, get, create, send, remove };
