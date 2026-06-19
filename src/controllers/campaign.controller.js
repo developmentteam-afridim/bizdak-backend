@@ -164,6 +164,12 @@ async function send(req, res, next) {
       storeCitySlug:  campaign.city.slug,
       targetCitySlug: campaign.targetCity?.slug || campaign.city.slug,
     };
+    // Interest-based campaigns carry their tagSlug so the app can open the feed
+    // filtered to that tag (showing ALL deals for the tag) when the user taps
+    // the notification — even when no specific deals were attached.
+    if (campaign.type === 'INTEREST_BASED' && campaign.tagSlug) {
+      data.tagSlug = campaign.tagSlug;
+    }
     if (campaign.storeId)      data.storeId = campaign.storeId;
     if (campaign.deals.length) data.dealIds = campaign.deals.map((cd) => cd.deal.id).join(',');
     try {
