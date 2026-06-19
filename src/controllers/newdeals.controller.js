@@ -1,44 +1,45 @@
 const prisma = require('../utils/prisma');
-
 /**
  * GET /api/stores/:id/deals/new?since=ISO_DATE
  *
- * Returns deals for a store created after `since`.
- * Public endpoint — no user identity, no auth required.
- * The mobile app calls this only after passing mute/snooze checks.
- * Response is intentionally minimal to keep payload tiny.
+ * Returns currently-ACTIVE deals for a store. Public endpoint — no user
+ * identity, no auth required. The mobile app calls this only after passing
+ * mute/snooze checks on geofence entry.
+ *
+ * NOTE: this historically filtered to deals CREATED after `since`, which
+ * silently prevented re-notification — a still-active deal created before the
+ * user's last visit could never fire again, so frequently-visited stores went
+ * permanently silent. The app now enforces a per-store notification cooldown
+ * (60 days) on-device, so the backend simply reports whether the store has any
+ * currently-active deal. `since` is still accepted for backward compatibility
+ * but no longer gates results by creation date.
  */
 async function getNewDeals(req, res, next) {
   try {
     const { id } = req.params;
     const { since } = req.query;
-
-    if (!since) {
-      return res.status(400).json({ error: '`since` query param required (ISO 8601 datetime).' });
+    // `since` remains accepted for backward compatibility but no longer filters
+    // by creation date. Validate only if provided.
+    if (since) {
+      const sinceDate = new Date(since);
+      if (isNaN(sinceDate.getTime())) {
+        return res.status(400).json({ error: '`since` must be a valid ISO 8601 datetime.' });
+      }
     }
-
-    const sinceDate = new Date(since);
-    if (isNaN(sinceDate.getTime())) {
-      return res.status(400).json({ error: '`since` must be a valid ISO 8601 datetime.' });
-    }
-
-    // Cap lookback to 30 days — prevents accidental full-history scans
-    const MAX_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
-    const cappedSince = new Date(Math.max(sinceDate.getTime(), Date.now() - MAX_LOOKBACK_MS));
-
     // Verify store exists — findFirst with minimal select is faster than count
     const storeExists = await prisma.store.findFirst({ where: { id }, select: { id: true } });
     if (!storeExists) return res.status(404).json({ error: 'Store not found.' });
-
+    const now = new Date();
     const deals = await prisma.deal.findMany({
       where: {
         storeId: id,
         isActive: true,
         AND: [
-          { OR: [{ endDate:   { gte: new Date() } }, { endDate:   null }] },
-          { OR: [{ startDate: { lte: new Date() } }, { startDate: null }] },
+          { OR: [{ endDate:   { gt: now } }, { endDate:   null }] },  // not expired (incl. open-ended)
+          { OR: [{ startDate: { lte: now } }, { startDate: null }] }, // already started
         ],
-        createdAt: { gt: cappedSince },
+        // NOTE: no createdAt filter — any currently-active deal qualifies so a
+        // previously-seen deal can re-notify after the app-side cooldown passes.
       },
       select: {
         id: true,
@@ -51,12 +52,10 @@ async function getNewDeals(req, res, next) {
       },
       orderBy: { createdAt: 'desc' },
     });
-
     res.json({
       storeId: id,
-      since:          cappedSince.toISOString(),    // effective lookback (capped at 30 days)
-      requestedSince: sinceDate.toISOString(),       // what the client originally sent
-      count: deals.length,
+      since:  since ? new Date(since).toISOString() : null, // echoed back; not used for filtering
+      count:  deals.length,
       hasNew: deals.length > 0,
       deals: deals.map((d) => ({
         id: d.id,
@@ -71,5 +70,4 @@ async function getNewDeals(req, res, next) {
     next(err);
   }
 }
-
 module.exports = { getNewDeals };
